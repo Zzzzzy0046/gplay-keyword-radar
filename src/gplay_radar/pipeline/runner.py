@@ -26,7 +26,11 @@ from gplay_radar.pipeline.diff import build_keyword_candidates, detect_chart_dar
 from gplay_radar.pipeline.normalize import normalize_keyword
 from gplay_radar.pipeline.scoring import score_keyword
 from gplay_radar.reporting.dingtalk import send_dingtalk_daily_summary
-from gplay_radar.reporting.markdown import render_daily_report, render_weekly_report
+from gplay_radar.reporting.markdown import (
+    render_daily_report,
+    render_global_summary_report,
+    render_weekly_report,
+)
 from gplay_radar.storage.db import connect_db, init_db
 from gplay_radar.storage.repository import RadarRepository
 
@@ -76,13 +80,22 @@ class RadarPipeline:
         if self._owns_conn:
             self._conn.close()
 
-    def _select_markets(self, market_filter: str | None) -> list[MarketConfig]:
-        if not market_filter:
-            return self.cfg.markets
-        target = market_filter.strip().lower()
-        selected = [m for m in self.cfg.markets if m.country == target]
-        if not selected:
-            raise ValueError(f"Market {market_filter!r} not found in config.yaml")
+    def _select_markets(
+        self,
+        market_filter: str | None = None,
+        region_filter: str | None = None,
+    ) -> list[MarketConfig]:
+        selected = list(self.cfg.markets)
+        if region_filter:
+            regions = {r.strip().lower() for r in region_filter.split(",") if r.strip()}
+            selected = [m for m in selected if m.region in regions]
+            if not selected:
+                raise ValueError(f"Region {region_filter!r} not found in config.yaml")
+        if market_filter:
+            targets = {t.strip().lower() for t in market_filter.split(",") if t.strip()}
+            selected = [m for m in selected if m.country in targets]
+            if not selected:
+                raise ValueError(f"Market {market_filter!r} not found in config.yaml")
         return selected
 
     def run_daily(
@@ -90,6 +103,7 @@ class RadarPipeline:
         *,
         run_date: date | None = None,
         market_filter: str | None = None,
+        region_filter: str | None = None,
         skip_trends: bool = False,
         skip_push: bool = False,
     ) -> list[RunSummary]:
@@ -97,7 +111,7 @@ class RadarPipeline:
         run_date_str = ref_date.isoformat()
         summaries: list[RunSummary] = []
 
-        for market in self._select_markets(market_filter):
+        for market in self._select_markets(market_filter, region_filter):
             summary = self._run_daily_for_market(
                 market=market,
                 ref_date=ref_date,
@@ -106,7 +120,49 @@ class RadarPipeline:
                 skip_push=skip_push,
             )
             summaries.append(summary)
+
+        global_path = self.generate_global_summary(run_date=ref_date)
+        if global_path and summaries:
+            summaries[-1].global_summary_path = global_path
         return summaries
+
+    def generate_global_summary(self, *, run_date: date | None = None) -> str | None:
+        """Build cross-market summary report if >=2 markets have data for run_date."""
+        ref_date = run_date or date.today()
+        run_date_str = ref_date.isoformat()
+        scores_all = self.repo.get_scores_for_date_all_markets(run_date_str)
+        charts_all = self.repo.get_charts_for_date_all_markets(run_date_str)
+        countries_present = {s.country for s in scores_all} | {c for c, _ in charts_all.keys()}
+        if len(countries_present) < 2:
+            return None
+
+        blacklist = set(self.cfg.scoring.blacklist_terms)
+        dark_horses_by_market: dict[str, list[DarkHorseApp]] = {}
+        for (country, lang), chart_apps in charts_all.items():
+            prev_date, prev_ranks = self.repo.get_latest_previous_chart_ranks(
+                run_date_str, country, lang
+            )
+            dark_horses_by_market[country] = detect_chart_dark_horses(
+                today_charts=chart_apps,
+                prev_ranks=prev_ranks,
+                charts_cfg=self.cfg.charts,
+                has_prev_snapshot=prev_date is not None,
+                blacklist=blacklist,
+                lang=lang,
+            )
+
+        markets_map = {m.country: m for m in self.cfg.markets}
+        md = render_global_summary_report(
+            run_date=run_date_str,
+            markets_map=markets_map,
+            scores_all=scores_all,
+            dark_horses_by_market=dark_horses_by_market,
+        )
+        out_dir = self.cfg.storage.reports_dir / "daily"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{run_date_str}_global_summary.md"
+        out_path.write_text(md, encoding="utf-8")
+        return str(out_path)
 
     def _run_daily_for_market(
         self,
@@ -167,6 +223,23 @@ class RadarPipeline:
                 charts_cfg=self.cfg.charts,
                 has_prev_snapshot=prev_chart_date is not None,
                 blacklist=blacklist,
+                lang=market.lang,
+            )
+
+            max_chart_phrases = (
+                market.max_chart_phrases_to_suggest
+                if market.max_chart_phrases_to_suggest is not None
+                else self.cfg.funnel.max_chart_phrases_to_suggest
+            )
+            max_serp_candidates = (
+                market.max_serp_candidates
+                if market.max_serp_candidates is not None
+                else self.cfg.funnel.max_serp_candidates
+            )
+            max_trends_candidates = (
+                market.max_trends_candidates
+                if market.max_trends_candidates is not None
+                else self.cfg.funnel.max_trends_candidates
             )
 
             # --- Stage 1B: Seed Suggest + Dark-Horse Phrase Two-Hop Suggest ---
@@ -175,20 +248,26 @@ class RadarPipeline:
                 completed_seeds = self.repo.get_completed_suggest_seeds(
                     run_date_str, market.country, market.lang
                 )
-                seed_queries = build_seed_queries(self.cfg.suggest, ref_date)
+                seed_queries = build_seed_queries(
+                    self.cfg.suggest,
+                    ref_date,
+                    lang=market.lang,
+                    expand_az_override=market.expand_az,
+                    az_letters_override=market.az_letters_per_day,
+                )
 
                 # Feed top chart dark-horse phrases back into Suggest to discover real search demand!
                 seen_q = {q for q, _ in seed_queries}
                 added_dh = 0
                 for dh in dark_horses:
-                    if added_dh >= self.cfg.funnel.max_chart_phrases_to_suggest:
+                    if added_dh >= max_chart_phrases:
                         break
                     for phrase in dh.extracted_phrases:
                         if phrase not in seen_q:
                             seen_q.add(phrase)
                             seed_queries.append((phrase, f"darkhorse_{dh.category.lower()}"))
                             added_dh += 1
-                            if added_dh >= self.cfg.funnel.max_chart_phrases_to_suggest:
+                            if added_dh >= max_chart_phrases:
                                 break
 
                 suggest_failures = 0
@@ -228,9 +307,10 @@ class RadarPipeline:
                 history_suggests=history_suggests,
                 dark_horses=dark_horses,
                 blacklist=blacklist,
+                lang=market.lang,
             )
 
-            top_candidates = candidates[: self.cfg.funnel.max_serp_candidates]
+            top_candidates = candidates[:max_serp_candidates]
             logger.info(
                 "[%s] Stage 2 complete: mode=%s, %d total candidates -> enriching Top %d via SERP & App Details...",
                 market.country.upper(),
@@ -272,14 +352,14 @@ class RadarPipeline:
 
                 serp_by_kw[cand.keyword] = serp_apps
 
-                # Enrich top apps using 7-day SQLite cache first
+                # Enrich top apps using 7-day SQLite English-metadata cache (consistent released dates + cross-market reuse)
                 for app in serp_apps[: self.cfg.funnel.serp_top_n]:
                     if app.app_id in details_map:
                         continue
                     cached = self.repo.get_cached_app(
                         app.app_id,
                         market.country,
-                        market.lang,
+                        "en",
                         ttl_days=self.cfg.storage.app_cache_ttl_days,
                     )
                     if cached:
@@ -289,7 +369,7 @@ class RadarPipeline:
                         detail = self.app_detail.fetch(
                             app.app_id,
                             country=market.country,
-                            lang=market.lang,
+                            lang="en",
                             ref_date=ref_date,
                         )
                         if detail:
@@ -325,7 +405,7 @@ class RadarPipeline:
             trends_enabled = self.cfg.funnel.trends_enabled and not skip_trends
             if trends_enabled:
                 trends_targets = [s.keyword for s in prelim_scores if not s.is_brand][
-                    : self.cfg.funnel.max_trends_candidates
+                    :max_trends_candidates
                 ]
                 for kw in trends_targets:
                     cached_tr = self.repo.get_trends_for_keyword(
@@ -442,13 +522,17 @@ class RadarPipeline:
             raise
 
     def run_weekly(
-        self, *, end_date: date | None = None, market_filter: str | None = None
+        self,
+        *,
+        end_date: date | None = None,
+        market_filter: str | None = None,
+        region_filter: str | None = None,
     ) -> list[str]:
         ref_end = end_date or date.today()
         ref_start = ref_end - timedelta(days=6)
         report_paths: list[str] = []
 
-        for market in self._select_markets(market_filter):
+        for market in self._select_markets(market_filter, region_filter):
             scores = self.repo.get_scores_in_range(
                 market.country, market.lang, ref_start.isoformat(), ref_end.isoformat()
             )
@@ -484,12 +568,12 @@ class RadarPipeline:
         details_map: dict[str, AppDetailRecord] = {}
         for app in serp_apps:
             cached = self.repo.get_cached_app(
-                app.app_id, country, lang, ttl_days=self.cfg.storage.app_cache_ttl_days
+                app.app_id, country, "en", ttl_days=self.cfg.storage.app_cache_ttl_days
             )
             if cached:
                 details_map[app.app_id] = cached
             else:
-                detail = self.app_detail.fetch(app.app_id, country=country, lang=lang, ref_date=ref_date)
+                detail = self.app_detail.fetch(app.app_id, country=country, lang="en", ref_date=ref_date)
                 if detail:
                     self.repo.save_app_detail(detail)
                     details_map[app.app_id] = detail

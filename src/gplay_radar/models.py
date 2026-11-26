@@ -9,6 +9,13 @@ class MarketConfig:
     country: str = "us"
     lang: str = "en"
     label: str = "US (English)"
+    region: str = "na"
+    tier: str = "deep"  # deep | radar
+    expand_az: bool | None = None
+    az_letters_per_day: int | None = None
+    max_chart_phrases_to_suggest: int | None = None
+    max_serp_candidates: int | None = None
+    max_trends_candidates: int | None = None
 
 
 @dataclass
@@ -95,7 +102,7 @@ class TrendsRecord:
 @dataclass
 class KeywordCandidate:
     keyword: str
-    sources: list[str] = field(default_factory=list)  # e.g. ["suggest:tools_utility", "chart:TOOLS"]
+    sources: list[str] = field(default_factory=list)
     best_suggest_rank: int | None = None
     prev_median_suggest_rank: float | None = None
     suggest_rank_delta: float | None = None
@@ -140,3 +147,4 @@ class RunSummary:
     enriched_keywords_count: int
     scored_opportunities_count: int
     report_path: str
+    global_summary_path: str | None = None

@@ -69,9 +69,31 @@ def select_daily_az_letters(run_date: date, letters_per_day: int) -> list[str]:
     return [alphabet[(start + i) % len(alphabet)] for i in range(letters_per_day)]
 
 
-def build_seed_queries(suggest_cfg: SuggestConfig, run_date: date) -> list[tuple[str, str]]:
+LATIN_SCRIPT_LANGS = {"en", "de", "fr", "es", "pt", "id", "tr", "it", "nl", "pl", "vi"}
+
+
+def build_seed_queries(
+    suggest_cfg: SuggestConfig,
+    run_date: date,
+    *,
+    lang: str = "en",
+    expand_az_override: bool | None = None,
+    az_letters_override: int | None = None,
+) -> list[tuple[str, str]]:
     """Build deduplicated list of (seed_query, group_name) for a daily suggest sweep."""
-    letters = select_daily_az_letters(run_date, suggest_cfg.az_letters_per_day)
+    lang_key = (lang or "en").lower()
+    letters_count = (
+        az_letters_override if az_letters_override is not None else suggest_cfg.az_letters_per_day
+    )
+    allow_az_for_script = lang_key in LATIN_SCRIPT_LANGS
+    letters = (
+        select_daily_az_letters(run_date, letters_count)
+        if (allow_az_for_script and expand_az_override is not False)
+        else []
+    )
+    groups = suggest_cfg.groups_for_lang(lang_key)
+    intent_prefixes = suggest_cfg.prefixes_for_lang(lang_key)
+
     queries: list[tuple[str, str]] = []
     seen: set[str] = set()
 
@@ -81,13 +103,14 @@ def build_seed_queries(suggest_cfg: SuggestConfig, run_date: date) -> list[tuple
             seen.add(norm)
             queries.append((norm, group))
 
-    for grp in suggest_cfg.seed_groups:
+    for grp in groups:
+        do_az = (expand_az_override if expand_az_override is not None else grp.expand_az) and bool(letters)
         for seed in grp.seeds:
             _add(seed, grp.name)
-            for prefix in suggest_cfg.intent_prefixes:
+            for prefix in intent_prefixes:
                 if not seed.startswith(f"{prefix} ") and seed != prefix:
                     _add(f"{prefix} {seed}", grp.name)
-            if grp.expand_az:
+            if do_az:
                 for ch in letters:
                     _add(f"{seed} {ch}", grp.name)
     return queries

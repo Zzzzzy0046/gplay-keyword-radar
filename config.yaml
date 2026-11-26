@@ -1,5 +1,5 @@
 # Google Play Keyword Radar Configuration
-# Target: US English consumer app opportunity discovery (multi-country extensible)
+# Multi-market consumer app opportunity discovery (US + EU + LATAM + SEA & MENA)
 
 storage:
   db_path: "data/radar.db"
@@ -13,14 +13,108 @@ network:
   min_delay_seconds: 0.6
   max_delay_seconds: 1.5
   max_retries: 3
-  daily_request_budget: 800
+  # Sized to cover all 10 markets in one sweep with global AppDetail caching
+  daily_request_budget: 2500
 
+# Tiered market list:
+# - deep: full a-z seed expansion + Top 35 SERP + Top 20 Trends
+# - radar: category charts + localized core seeds + dark-horse 2-hop + Top 15 SERP + Top 10 Trends
+# Use `--market de` or `--region eu|latam|sea_mena|na` to run subsets anytime.
 markets:
+  # North America (Deep)
   - country: "us"
     lang: "en"
     label: "US (English)"
+    region: "na"
+    tier: "deep"
 
-# Google Play categories for Top Free & Top Grossing monitoring
+  # Tier-1 Non-English Europe (EU)
+  - country: "de"
+    lang: "de"
+    label: "Germany (Deutsch)"
+    region: "eu"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+  - country: "fr"
+    lang: "fr"
+    label: "France (Français)"
+    region: "eu"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+  - country: "es"
+    lang: "es"
+    label: "Spain (Español)"
+    region: "eu"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+
+  # High-Volume Latin America (LATAM)
+  - country: "br"
+    lang: "pt"
+    label: "Brazil (Português)"
+    region: "latam"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+  - country: "mx"
+    lang: "es"
+    label: "Mexico (Español)"
+    region: "latam"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+
+  # Southeast Asia & Middle East (SEA & MENA)
+  - country: "id"
+    lang: "id"
+    label: "Indonesia (Bahasa)"
+    region: "sea_mena"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+  - country: "in"
+    lang: "en"
+    label: "India (English)"
+    region: "sea_mena"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+  - country: "sa"
+    lang: "ar"
+    label: "Saudi Arabia (العربية)"
+    region: "sea_mena"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+  - country: "tr"
+    lang: "tr"
+    label: "Turkey (Türkçe)"
+    region: "sea_mena"
+    tier: "radar"
+    expand_az: false
+    max_chart_phrases_to_suggest: 12
+    max_serp_candidates: 15
+    max_trends_candidates: 10
+
 charts:
   enabled: true
   collections:
@@ -28,7 +122,6 @@ charts:
     - "topgrossing"
   top_n_free: 100
   top_n_grossing: 50
-  # Apps in Top 100 with <= dark_horse_max_installs OR rank jump >= dark_horse_rank_jump
   dark_horse_max_installs: 1000000
   dark_horse_rank_jump: 15
   categories:
@@ -38,74 +131,195 @@ charts:
     - "PHOTOGRAPHY"
     - "ENTERTAINMENT"
 
-# Seed keywords grouped by consumer app verticals
-# core_expand_az: true -> expands with rotated letters each day (or full a-z if letters_per_day = 26)
 suggest:
   enabled: true
-  # Number of a-z expansion letters per core seed per day (rotates deterministically by day-of-year;
-  # set to 26 for full a-z every day, or 6-8 for fast low-noise daily runs)
   az_letters_per_day: 6
   intent_prefixes:
     - "ai"
     - "free"
-  seed_groups:
-    tools_utility:
-      expand_az: true
-      seeds:
-        - "pdf scanner"
-        - "smart printer"
-        - "find my phone"
-        - "airtag detector"
-        - "phone cleaner"
-        - "qr scanner"
-        - "coin identifier"
-        - "plant identifier"
-    productivity_ai:
-      expand_az: true
-      seeds:
-        - "ai note taker"
-        - "voice recorder"
-        - "document reader"
-        - "ai translator"
-        - "resume builder"
-    health_wellness:
-      expand_az: false
-      seeds:
-        - "heart rate monitor"
-        - "blood pressure tracker"
-        - "calorie counter"
-        - "sleep tracker"
-        - "fasting tracker"
-    media_entertainment:
-      expand_az: false
-      seeds:
-        - "short drama"
-        - "reel drama"
-        - "ai photo editor"
-        - "video enhancer"
-        - "game emulator"
+  intent_prefixes_by_lang:
+    en: ["ai", "free"]
+    de: ["ki", "kostenlos"]
+    fr: ["ia", "gratuit"]
+    es: ["ia", "gratis"]
+    pt: ["ia", "gratis"]
+    id: ["ai", "gratis"]
+    tr: ["yapay zeka", "ücretsiz"]
+    ar: ["ذكاء اصطناعي"]
+
+  # Localized seed libraries per language (auto-selected by market.lang)
+  seed_sets_by_lang:
+    en:
+      tools_utility:
+        expand_az: true
+        seeds:
+          - "pdf scanner"
+          - "smart printer"
+          - "find my phone"
+          - "airtag detector"
+          - "phone cleaner"
+          - "qr scanner"
+          - "coin identifier"
+          - "plant identifier"
+      productivity_ai:
+        expand_az: true
+        seeds:
+          - "ai note taker"
+          - "voice recorder"
+          - "document reader"
+          - "ai translator"
+          - "resume builder"
+      health_wellness:
+        expand_az: false
+        seeds:
+          - "heart rate monitor"
+          - "blood pressure tracker"
+          - "calorie counter"
+          - "sleep tracker"
+          - "fasting tracker"
+      media_entertainment:
+        expand_az: false
+        seeds:
+          - "short drama"
+          - "reel drama"
+          - "ai photo editor"
+          - "video enhancer"
+          - "game emulator"
+
+    de:
+      core_de:
+        expand_az: false
+        seeds:
+          - "pdf scanner"
+          - "drucker app"
+          - "speicher reiniger"
+          - "münzen erkennen"
+          - "pflanzen erkennen"
+          - "blutdruck tagebuch"
+          - "pulsmesser"
+          - "kalorienzähler"
+          - "ki übersetzer"
+          - "foto wiederherstellen"
+          - "stuhlyoga"
+          - "kurzdrama"
+
+    fr:
+      core_fr:
+        expand_az: false
+        seeds:
+          - "scanner pdf"
+          - "imprimante mobile"
+          - "nettoyeur téléphone"
+          - "identifier plante"
+          - "identifier pièce"
+          - "tension artérielle"
+          - "fréquence cardiaque"
+          - "compteur calories"
+          - "traducteur ia"
+          - "restaurer photo"
+          - "yoga sur chaise"
+          - "drama court"
+
+    es:
+      core_es:
+        expand_az: false
+        seeds:
+          - "escaner pdf"
+          - "impresora movil"
+          - "limpiador de telefono"
+          - "identificador de monedas"
+          - "identificador de plantas"
+          - "presion arterial"
+          - "frecuencia cardiaca"
+          - "contador de calorias"
+          - "traductor ia"
+          - "restaurar fotos"
+          - "yoga en silla"
+          - "drama corto"
+
+    pt:
+      core_pt:
+        expand_az: false
+        seeds:
+          - "scanner pdf"
+          - "impressora celular"
+          - "limpador de celular"
+          - "identificador de moedas"
+          - "identificador de plantas"
+          - "pressao arterial"
+          - "batimento cardiaco"
+          - "contador de calorias"
+          - "tradutor ia"
+          - "restaurar fotos"
+          - "exercicio na cadeira"
+          - "drama curto"
+
+    id:
+      core_id:
+        expand_az: false
+        seeds:
+          - "scanner pdf"
+          - "pembersih hp"
+          - "printer bluetooth"
+          - "deteksi tanaman"
+          - "cek tekanan darah"
+          - "detak jantung"
+          - "hitung kalori"
+          - "penerjemah ai"
+          - "pulihkan foto"
+          - "drama pendek"
+          - "editor foto ai"
+          - "emulator game"
+
+    tr:
+      core_tr:
+        expand_az: false
+        seeds:
+          - "pdf tarayıcı"
+          - "telefon temizleyici"
+          - "mobil yazıcı"
+          - "bitki tanıma"
+          - "tansiyon takip"
+          - "nabız ölçer"
+          - "kalori sayacı"
+          - "yapay zeka çeviri"
+          - "fotoğraf kurtarma"
+          - "kısa drama"
+          - "fotoğraf düzenleyici"
+          - "oyun emülatör"
+
+    ar:
+      core_ar:
+        expand_az: false
+        seeds:
+          - "ماسح pdf"
+          - "تنظيف الهاتف"
+          - "طابعة جوال"
+          - "التعرف على النباتات"
+          - "قياس ضغط الدم"
+          - "قياس نبض القلب"
+          - "حساب السعرات"
+          - "مترجم فوري"
+          - "استرجاع الصور"
+          - "مسلسلات قصيرة"
+          - "تعديل الصور"
+          - "قارئ مستندات"
 
 funnel:
-  # Max chart dark-horse phrases to expand through Suggest each run
   max_chart_phrases_to_suggest: 25
-  # Max top candidate keywords to enrich with Google Play SERP Top 10 + App Details
   max_serp_candidates: 35
   serp_top_n: 10
-  # Max top scored candidates to validate with Google Trends (batched 5 per call -> ~4 calls)
   max_trends_candidates: 20
   trends_enabled: true
   trends_timeframe: "today 1-m"
 
 scoring:
-  # Thresholds for "entry opportunity" (small/new app friendliness)
   new_app_age_days: 365
   fresh_app_age_days: 180
   small_app_max_installs: 1000000
   giant_app_min_installs: 50000000
-  # Brand auto-detection thresholds
   brand_giant_installs: 10000000
   brand_giant_ratings: 100000
-  # Extra static brand/noise terms to filter or demote
   blacklist_terms:
     - "google"
     - "youtube"
@@ -142,6 +356,21 @@ scoring:
     - "gmail"
     - "chrome"
     - "play store"
+    - "mercadolibre"
+    - "mercado libre"
+    - "mercado pago"
+    - "shopee"
+    - "lazada"
+    - "tokopedia"
+    - "gojek"
+    - "grab"
+    - "trendyol"
+    - "hepsiburada"
+    - "noon"
+    - "stc pay"
+    - "absher"
+    - "nubank"
+    - "kwai"
 
 reporting:
   top_opportunities_limit: 20
@@ -149,7 +378,6 @@ reporting:
   top_dark_horse_apps_limit: 15
   dingtalk:
     enabled: false
-    # Recommended: set DINGTALK_WEBHOOK_URL and DINGTALK_SECRET via environment variables
     webhook_url: ""
     secret: ""
     top_n: 8

@@ -221,6 +221,108 @@ def render_weekly_report(
     return "\n".join(lines)
 
 
+def render_global_summary_report(
+    *,
+    run_date: str,
+    markets_map: dict[str, MarketConfig],
+    scores_all: list[KeywordScoreRecord],
+    dark_horses_by_market: dict[str, list[DarkHorseApp]],
+) -> str:
+    """Render cross-market daily executive summary highlighting multi-country breakout apps."""
+    scores_by_country: dict[str, list[KeywordScoreRecord]] = defaultdict(list)
+    for s in scores_all:
+        scores_by_country[s.country].append(s)
+
+    countries = sorted(set(scores_by_country.keys()) | set(dark_horses_by_market.keys()))
+
+    # Aggregate dark-horse apps across markets by app_id
+    app_markets: dict[str, dict[str, Any]] = {}
+    for country, horses in dark_horses_by_market.items():
+        for dh in horses:
+            entry = app_markets.setdefault(
+                dh.app_id,
+                {
+                    "app_id": dh.app_id,
+                    "title": dh.title,
+                    "developer": dh.developer,
+                    "installs_str": dh.installs_str,
+                    "min_installs": dh.min_installs,
+                    "placements": {},
+                    "categories": set(),
+                },
+            )
+            entry["categories"].add(dh.category)
+            # Keep best rank per country
+            prev = entry["placements"].get(country)
+            if prev is None or dh.rank < prev["rank"]:
+                entry["placements"][country] = {
+                    "rank": dh.rank,
+                    "collection": "免费" if dh.collection == "topselling_free" else "畅销",
+                    "category": dh.category,
+                }
+            # Prefer English or cleaner title if US/IN present
+            if country in ("us", "in") and dh.title:
+                entry["title"] = dh.title
+
+    cross_country_horses = [
+        info for info in app_markets.values() if len(info["placements"]) >= 2
+    ]
+    cross_country_horses.sort(
+        key=lambda x: (
+            -len(x["placements"]),
+            x["min_installs"] if x["min_installs"] is not None else 10_000_000_000,
+            min(p["rank"] for p in x["placements"].values()),
+        )
+    )
+
+    lines: list[str] = [
+        f"# Google Play 多国跨市场热词总览 — {run_date}",
+        "",
+        f"- **覆盖市场数**：`{len(countries)}` 个国家（`{', '.join(c.upper() for c in countries)}`）",
+        f"- **跨国共现黑马 App**：`{len(cross_country_horses)}` 款（同时在 `>=2` 个国家冲榜的低安装/飙升 App）",
+        "",
+        "## 一、各国 Top 3 机会热词速览",
+        "",
+        "| 国家 / 市场 | 区域 | 语种 | 黑马数 | Top 3 选品机会词（非品牌） | 单国日报 |",
+        "|---|---|---|---:|---|---|",
+    ]
+
+    for c in countries:
+        m = markets_map.get(c, MarketConfig(country=c, lang="en", label=c.upper(), region="-"))
+        opps = [s for s in scores_by_country.get(c, []) if not s.is_brand]
+        opps.sort(key=lambda x: (-x.total_score, x.keyword))
+        top3 = " / ".join(f"**{o.keyword}** ({o.total_score:.1f})" for o in opps[:3]) or "-"
+        dh_count = len(dark_horses_by_market.get(c, []))
+        rel_link = f"[{run_date}_{c}.md]({run_date}_{c}.md)"
+        lines.append(
+            f"| {m.label} (`{c.upper()}`) | `{m.region}` | `{m.lang}` | {dh_count} | {top3} | {rel_link} |"
+        )
+
+    lines.append("")
+    lines.append("## 二、跨国同步起量黑马 App 雷达（多国共现信号）")
+    lines.append("")
+    if not cross_country_horses:
+        lines.append("> 今日暂无同时在 2 个及以上国家榜单出现的低安装/飙升黑马 App。")
+        lines.append("")
+    else:
+        lines.append("| 覆盖国数 | App 名称 | 安装量级 | 品类 | 各国榜单占位 |")
+        lines.append("|---:|---|---|---|---|")
+        for info in cross_country_horses[:25]:
+            url = _play_url(info["app_id"], "us", "en")
+            cats = ", ".join(sorted(info["categories"]))
+            places = " · ".join(
+                f"`{ctry.upper()}` {p['collection']}#{p['rank']}"
+                for ctry, p in sorted(info["placements"].items(), key=lambda kv: kv[1]["rank"])
+            )
+            lines.append(
+                f"| **{len(info['placements'])}国** | [{info['title']}]({url}) | "
+                f"`{info['installs_str'] or '-'}` | {cats} | {places} |"
+            )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def render_inspect_card(
     scored: KeywordScoreRecord,
     suggestions: list[str],

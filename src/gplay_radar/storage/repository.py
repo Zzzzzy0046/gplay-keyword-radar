@@ -196,6 +196,38 @@ class RadarRepository:
             for r in rows
         ]
 
+    def get_charts_for_date_all_markets(
+        self, run_date: str
+    ) -> dict[tuple[str, str], list[ChartAppRecord]]:
+        rows = self.conn.execute(
+            """
+            SELECT country, lang, category, collection, rank, app_id, title, developer,
+                   installs_str, min_installs, score, description
+            FROM chart_snapshots
+            WHERE run_date = ?
+            ORDER BY country, category, collection, rank
+            """,
+            (run_date,),
+        ).fetchall()
+        grouped: dict[tuple[str, str], list[ChartAppRecord]] = {}
+        for r in rows:
+            key = (r["country"], r["lang"])
+            grouped.setdefault(key, []).append(
+                ChartAppRecord(
+                    category=r["category"],
+                    collection=r["collection"],
+                    rank=r["rank"],
+                    app_id=r["app_id"],
+                    title=r["title"],
+                    developer=r["developer"],
+                    installs_str=r["installs_str"],
+                    min_installs=r["min_installs"],
+                    score=r["score"],
+                    description=r["description"],
+                )
+            )
+        return grouped
+
     def get_latest_previous_chart_ranks(
         self, before_date: str, country: str, lang: str
     ) -> tuple[str | None, dict[tuple[str, str, str], int]]:
@@ -233,6 +265,17 @@ class RadarRepository:
             """,
             (app_id, country, lang),
         ).fetchone()
+        if not row and lang == "en":
+            # Reuse fresh English global metadata across countries to save HTTP requests
+            row = self.conn.execute(
+                """
+                SELECT * FROM apps_cache
+                WHERE app_id = ? AND lang = 'en'
+                ORDER BY fetched_at DESC
+                LIMIT 1
+                """,
+                (app_id,),
+            ).fetchone()
         if not row:
             return None
         try:
@@ -397,7 +440,7 @@ class RadarRepository:
         )
         self.conn.commit()
 
-    # ---- Keyword Scores & Weekly Queries ----
+    # ---- Keyword Scores & Multi-Market Queries ----
 
     def save_keyword_scores(self, scores: list[KeywordScoreRecord]) -> None:
         if not scores:
@@ -432,6 +475,24 @@ class RadarRepository:
         )
         self.conn.commit()
 
+    def _row_to_score(self, r: sqlite3.Row) -> KeywordScoreRecord:
+        return KeywordScoreRecord(
+            run_date=r["run_date"],
+            country=r["country"],
+            lang=r["lang"],
+            keyword=r["keyword"],
+            run_mode=r["run_mode"],
+            sources=json.loads(r["sources_json"] or "[]"),
+            is_brand=bool(r["is_brand"]),
+            brand_reason=r["brand_reason"],
+            momentum_score=r["momentum_score"],
+            entry_score=r["entry_score"],
+            trends_score=r["trends_score"],
+            total_score=r["total_score"],
+            signals=json.loads(r["signals_json"] or "{}"),
+            top_apps=json.loads(r["top_apps_json"] or "[]"),
+        )
+
     def get_scores_in_range(
         self, country: str, lang: str, start_date: str, end_date: str
     ) -> list[KeywordScoreRecord]:
@@ -444,22 +505,15 @@ class RadarRepository:
             """,
             (country, lang, start_date, end_date),
         ).fetchall()
-        return [
-            KeywordScoreRecord(
-                run_date=r["run_date"],
-                country=r["country"],
-                lang=r["lang"],
-                keyword=r["keyword"],
-                run_mode=r["run_mode"],
-                sources=json.loads(r["sources_json"] or "[]"),
-                is_brand=bool(r["is_brand"]),
-                brand_reason=r["brand_reason"],
-                momentum_score=r["momentum_score"],
-                entry_score=r["entry_score"],
-                trends_score=r["trends_score"],
-                total_score=r["total_score"],
-                signals=json.loads(r["signals_json"] or "{}"),
-                top_apps=json.loads(r["top_apps_json"] or "[]"),
-            )
-            for r in rows
-        ]
+        return [self._row_to_score(r) for r in rows]
+
+    def get_scores_for_date_all_markets(self, run_date: str) -> list[KeywordScoreRecord]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM keyword_scores
+            WHERE run_date = ?
+            ORDER BY country, total_score DESC
+            """,
+            (run_date,),
+        ).fetchall()
+        return [self._row_to_score(r) for r in rows]

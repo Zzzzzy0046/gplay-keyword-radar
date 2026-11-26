@@ -26,14 +26,23 @@ pip install -e . --no-build-isolation --no-deps
 # 2. 检查代理与 4 个公开数据源连通性
 python -m gplay_radar.cli check-health
 
-# 3. 执行每日扫描并产出 Markdown 日报
-python -m gplay_radar.cli run daily
+# 3. 执行每日扫描并产出 Markdown 日报（默认覆盖 10 国并自动生成跨市场总览）
+gplay-radar run daily
 
-# 4. 生成近 7 天持续热词周报
-python -m gplay_radar.cli run weekly
+# 按区域或指定国家运行（支持 na / eu / latam / sea_mena 或逗号分隔国家码）
+gplay-radar run daily --region eu
+gplay-radar run daily --region latam
+gplay-radar run daily --region sea_mena
+gplay-radar run daily --market de,br,id,sa
 
-# 5. 临时深挖任意单个关键词的竞争格局与机会分
-python -m gplay_radar.cli inspect "coin identifier"
+# 4. 生成近 7 天持续热词周报 & 跨市场总览
+gplay-radar run weekly
+gplay-radar run global-summary
+
+# 5. 临时深挖任意国家/语言单个关键词的竞争格局与机会分
+gplay-radar inspect "coin identifier" --country us --lang en
+gplay-radar inspect "escaner pdf" --country mx --lang es
+gplay-radar inspect "ماسح pdf" --country sa --lang ar
 ```
 
 ## 定时运行与钉钉推送

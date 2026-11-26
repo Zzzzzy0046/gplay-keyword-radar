@@ -11,9 +11,9 @@ from gplay_radar.models import (
     TrendsRecord,
 )
 from gplay_radar.pipeline.normalize import (
-    GENERIC_FUNCTIONAL_NOUNS,
-    STOPWORDS,
     extract_brand_prefix,
+    get_generic_functional_nouns,
+    get_stopwords,
     matches_static_blacklist,
     normalize_keyword,
 )
@@ -25,6 +25,7 @@ def detect_brand_keyword(
     details_map: dict[str, AppDetailRecord],
     blacklist: set[str],
     scoring_cfg: ScoringConfig,
+    lang: str = "en",
 ) -> tuple[bool, str]:
     """Identify brand-dominated keywords using static blacklist + SERP dominance heuristic."""
     norm_kw = normalize_keyword(keyword)
@@ -54,24 +55,29 @@ def detect_brand_keyword(
     if not (kw_matches_top1_brand or kw_matches_top1_dev):
         return False, ""
 
-    # Multi-word queries ending in a generic category noun (e.g. "document reader", "step tracker")
+    # Multi-word queries containing a generic category noun (e.g. "document reader", "escaner pdf", "ماسح pdf")
     # are usually category demand terms even when #1 app literally named itself after that category.
     norm_tokens = norm_kw.split()
+    generic_nouns = get_generic_functional_nouns(lang)
     if (
         len(norm_tokens) >= 2
-        and norm_tokens[-1] in GENERIC_FUNCTIONAL_NOUNS
+        and (norm_tokens[-1] in generic_nouns or norm_tokens[0] in generic_nouns)
         and not kw_matches_top1_dev
     ):
-        # Only treat as brand if the leading word looks like a coined/unique brand (absent from other Top 10 titles)
-        lead_tok = norm_tokens[0]
-        others_with_lead = sum(
-            1 for app in serp_apps[1:10] if lead_tok in normalize_keyword(app.title).split()
-        )
-        if others_with_lead >= 2:
-            return False, ""
+        stopwords = get_stopwords(lang)
+        anchor_tokens = [t for t in norm_tokens if t not in stopwords and len(t) >= 3]
+        if anchor_tokens:
+            others_with_anchor = sum(
+                1
+                for app in serp_apps[1:10]
+                if any(tok in normalize_keyword(app.title).split() for tok in anchor_tokens)
+            )
+            if others_with_anchor >= 2:
+                return False, ""
 
     # Count how many OTHER top-10 apps use the keyword's core tokens in their title
-    kw_tokens = [t for t in norm_kw.split() if t not in STOPWORDS and len(t) >= 3]
+    stopwords = get_stopwords(lang)
+    kw_tokens = [t for t in norm_kw.split() if t not in stopwords and len(t) >= 3]
     other_title_matches = 0
     for app in serp_apps[1:10]:
         t_norm = normalize_keyword(app.title)
@@ -250,7 +256,7 @@ def score_keyword(
 ) -> KeywordScoreRecord:
     blacklist = set(scoring_cfg.blacklist_terms)
     is_brand, brand_reason = detect_brand_keyword(
-        candidate.keyword, serp_apps, details_map, blacklist, scoring_cfg
+        candidate.keyword, serp_apps, details_map, blacklist, scoring_cfg, lang=lang
     )
     momentum_score, momentum_notes = compute_momentum_score(candidate, run_mode)
     entry_score, entry_metrics = compute_entry_score(

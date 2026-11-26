@@ -10,6 +10,7 @@ from gplay_radar.collectors.http_client import (
     parse_installs,
     parse_released_date,
 )
+from gplay_radar.collectors.serp import parse_serp_html
 from gplay_radar.collectors.suggest import (
     build_seed_queries,
     parse_suggest_response,
@@ -102,6 +103,26 @@ class TestParsers(unittest.TestCase):
         self.assertIn("ai pdf scanner", q_strs)
         # "ai translator" already starts with "ai ", so should not generate "ai ai translator"
         self.assertNotIn("ai ai translator", q_strs)
+
+    def test_parse_serp_html_handles_eu_null_top_section(self) -> None:
+        # Simulate EU Google Play HTML where section 0 has [23] = None and apps live in section 1
+        inner_app = [None] * 16
+        inner_app[0] = ["com.example.de.pdf", 7]
+        inner_app[3] = "Bild zu PDF - PDF Creator"
+        inner_app[4] = ["4.7", 4.7]
+        inner_app[14] = "IndieDev"
+        inner_app[15] = "100,000+"
+        app_entry = [inner_app]
+        sec0 = [None] * 24  # sec0[23] is None (triggers TypeError in upstream google_play_scraper)
+        sec1 = [None] * 23
+        sec1[22] = [[app_entry]]
+        ds4 = [[None, [sec0, sec1]]]
+        html = f"<script>AF_initDataCallback({{key: 'ds:4', hash: '1', data:{json.dumps(ds4)}, sideChannel: {{}}}});</script>"
+        rows = parse_serp_html(html, keyword="pdf scanner", top_n=10)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].rank, 1)
+        self.assertEqual(rows[0].app_id, "com.example.de.pdf")
+        self.assertEqual(rows[0].title, "Bild zu PDF - PDF Creator")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ def detect_chart_dark_horses(
     charts_cfg: ChartsConfig,
     has_prev_snapshot: bool,
     blacklist: set[str] | None = None,
+    lang: str = "en",
 ) -> list[DarkHorseApp]:
     """Identify breakout / dark-horse apps from today's Top Free & Top Grossing charts."""
     horses: list[DarkHorseApp] = []
@@ -57,7 +58,7 @@ def detect_chart_dark_horses(
 
         seen_keys.add(key)
         phrases = extract_phrases_from_chart_app(
-            app.title, description=app.description, blacklist=blacklist
+            app.title, description=app.description, blacklist=blacklist, lang=lang
         )
         horses.append(
             DarkHorseApp(
@@ -91,6 +92,7 @@ def build_keyword_candidates(
     history_suggests: list[dict[str, Any]],
     dark_horses: list[DarkHorseApp],
     blacklist: set[str],
+    lang: str = "en",
 ) -> tuple[str, list[KeywordCandidate]]:
     """Combine Suggest diff signals and Chart dark-horse phrases into ranked candidate list."""
     has_history = len(history_suggests) > 0
@@ -114,7 +116,7 @@ def build_keyword_candidates(
 
     for rec in today_suggests:
         kw = normalize_keyword(rec.suggestion)
-        if not is_valid_candidate_keyword(kw, blacklist=blacklist):
+        if not is_valid_candidate_keyword(kw, blacklist=blacklist, lang=lang):
             continue
         if kw not in cand_map:
             cand_map[kw] = KeywordCandidate(keyword=kw)
@@ -138,7 +140,7 @@ def build_keyword_candidates(
         }
         for phrase in dh.extracted_phrases:
             kw = normalize_keyword(phrase)
-            if not is_valid_candidate_keyword(kw, blacklist=blacklist):
+            if not is_valid_candidate_keyword(kw, blacklist=blacklist, lang=lang):
                 continue
             if kw not in cand_map:
                 cand_map[kw] = KeywordCandidate(keyword=kw)

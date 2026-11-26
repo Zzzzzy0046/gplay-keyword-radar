@@ -101,13 +101,18 @@ def main(argv: list[str] | None = None) -> int:
 
     daily_p = run_sub.add_parser("daily", help="Run daily discovery, enrichment, scoring & report")
     daily_p.add_argument("--date", help="Override run date (YYYY-MM-DD)")
-    daily_p.add_argument("--market", help="Filter to a single country code, e.g. us")
+    daily_p.add_argument("--market", help="Filter country code(s), e.g. us or de,br,sa")
+    daily_p.add_argument("--region", help="Filter region(s): na, eu, latam, sea_mena")
     daily_p.add_argument("--no-trends", action="store_true", help="Skip Google Trends step")
     daily_p.add_argument("--no-push", action="store_true", help="Skip DingTalk push")
 
     weekly_p = run_sub.add_parser("weekly", help="Generate 7-day rolling opportunity weekly report")
     weekly_p.add_argument("--date", help="End date of 7-day window (YYYY-MM-DD)")
-    weekly_p.add_argument("--market", help="Filter to a single country code, e.g. us")
+    weekly_p.add_argument("--market", help="Filter country code(s), e.g. us or de,br")
+    weekly_p.add_argument("--region", help="Filter region(s): na, eu, latam, sea_mena")
+
+    global_p = run_sub.add_parser("global-summary", help="Regenerate cross-market daily summary from SQLite")
+    global_p.add_argument("--date", help="Run date (YYYY-MM-DD)")
 
     insp_p = sub.add_parser("inspect", help="Live-inspect opportunity score for a single keyword")
     insp_p.add_argument("keyword", help="Keyword to inspect, e.g. 'coin identifier'")
@@ -132,23 +137,39 @@ def main(argv: list[str] | None = None) -> int:
             summaries = pipeline.run_daily(
                 run_date=ref_date,
                 market_filter=args.market,
+                region_filter=args.region,
                 skip_trends=args.no_trends,
                 skip_push=args.no_push,
             )
             for s in summaries:
                 print(
-                    f"[{s.status.upper()}] {s.run_date} ({s.country.upper()}) | mode={s.mode} | "
+                    f"[{s.status.upper()}] {s.run_date} ({s.country.upper()}/{s.lang}) | mode={s.mode} | "
                     f"suggests={s.suggest_count} | charts={s.chart_apps_count} | dark_horses={s.dark_horse_count} | "
                     f"opportunities={s.scored_opportunities_count} | requests={s.requests_used}"
                 )
                 print(f"Report saved to: {s.report_path}")
+            if summaries and summaries[-1].global_summary_path:
+                print(f"Global summary saved to: {summaries[-1].global_summary_path}")
             return 0
 
         if args.command == "run" and args.run_type == "weekly":
             ref_date = date.fromisoformat(args.date) if args.date else None
-            paths = pipeline.run_weekly(end_date=ref_date, market_filter=args.market)
+            paths = pipeline.run_weekly(
+                end_date=ref_date,
+                market_filter=args.market,
+                region_filter=args.region,
+            )
             for p in paths:
                 print(f"Weekly report saved to: {p}")
+            return 0
+
+        if args.command == "run" and args.run_type == "global-summary":
+            ref_date = date.fromisoformat(args.date) if args.date else None
+            gpath = pipeline.generate_global_summary(run_date=ref_date)
+            if gpath:
+                print(f"Global summary saved to: {gpath}")
+            else:
+                print("Need at least 2 markets with data on that date to generate global summary.")
             return 0
 
         if args.command == "inspect":

@@ -24,7 +24,7 @@ class NetworkConfig:
     min_delay_seconds: float = 0.6
     max_delay_seconds: float = 1.5
     max_retries: int = 3
-    daily_request_budget: int = 600
+    daily_request_budget: int = 2500
 
 
 @dataclass
@@ -50,7 +50,23 @@ class SuggestConfig:
     enabled: bool = True
     az_letters_per_day: int = 6
     intent_prefixes: list[str] = field(default_factory=lambda: ["ai", "free"])
+    intent_prefixes_by_lang: dict[str, list[str]] = field(default_factory=dict)
     seed_groups: list[SeedGroupConfig] = field(default_factory=list)
+    seed_groups_by_lang: dict[str, list[SeedGroupConfig]] = field(default_factory=dict)
+
+    def groups_for_lang(self, lang: str) -> list[SeedGroupConfig]:
+        key = lang.lower()
+        if key in self.seed_groups_by_lang and self.seed_groups_by_lang[key]:
+            return self.seed_groups_by_lang[key]
+        if "en" in self.seed_groups_by_lang and self.seed_groups_by_lang["en"]:
+            return self.seed_groups_by_lang["en"]
+        return self.seed_groups
+
+    def prefixes_for_lang(self, lang: str) -> list[str]:
+        key = lang.lower()
+        if key in self.intent_prefixes_by_lang:
+            return self.intent_prefixes_by_lang[key]
+        return self.intent_prefixes if key == "en" else []
 
 
 @dataclass
@@ -117,6 +133,28 @@ def _resolve_path(base_dir: Path, raw_path: str) -> Path:
     return p if p.is_absolute() else (base_dir / p)
 
 
+def _opt_int(val: Any) -> int | None:
+    return int(val) if val is not None else None
+
+
+def _opt_bool(val: Any) -> bool | None:
+    return bool(val) if val is not None else None
+
+
+def _parse_seed_groups(raw_groups: dict[str, Any] | None) -> list[SeedGroupConfig]:
+    groups: list[SeedGroupConfig] = []
+    for gname, gdata in (raw_groups or {}).items():
+        if isinstance(gdata, dict):
+            groups.append(
+                SeedGroupConfig(
+                    name=str(gname),
+                    expand_az=bool(gdata.get("expand_az", False)),
+                    seeds=[str(s).strip().lower() for s in (gdata.get("seeds") or []) if str(s).strip()],
+                )
+            )
+    return groups
+
+
 def load_config(config_path: str | Path) -> AppConfig:
     path = Path(config_path).resolve()
     if not path.exists():
@@ -141,7 +179,7 @@ def load_config(config_path: str | Path) -> AppConfig:
         min_delay_seconds=float(net_raw.get("min_delay_seconds", 0.6)),
         max_delay_seconds=float(net_raw.get("max_delay_seconds", 1.5)),
         max_retries=int(net_raw.get("max_retries", 3)),
-        daily_request_budget=int(net_raw.get("daily_request_budget", 600)),
+        daily_request_budget=int(net_raw.get("daily_request_budget", 2500)),
     )
 
     markets_raw = raw.get("markets") or [{"country": "us", "lang": "en", "label": "US (English)"}]
@@ -150,6 +188,13 @@ def load_config(config_path: str | Path) -> AppConfig:
             country=str(m.get("country", "us")).lower(),
             lang=str(m.get("lang", "en")).lower(),
             label=str(m.get("label") or f"{m.get('country', 'us').upper()} ({m.get('lang', 'en')})"),
+            region=str(m.get("region", "na")).lower(),
+            tier=str(m.get("tier", "deep")).lower(),
+            expand_az=_opt_bool(m.get("expand_az")),
+            az_letters_per_day=_opt_int(m.get("az_letters_per_day")),
+            max_chart_phrases_to_suggest=_opt_int(m.get("max_chart_phrases_to_suggest")),
+            max_serp_candidates=_opt_int(m.get("max_serp_candidates")),
+            max_trends_candidates=_opt_int(m.get("max_trends_candidates")),
         )
         for m in markets_raw
     ]
@@ -166,21 +211,26 @@ def load_config(config_path: str | Path) -> AppConfig:
     )
 
     suggest_raw = raw.get("suggest", {})
-    groups: list[SeedGroupConfig] = []
-    for gname, gdata in (suggest_raw.get("seed_groups") or {}).items():
-        if isinstance(gdata, dict):
-            groups.append(
-                SeedGroupConfig(
-                    name=str(gname),
-                    expand_az=bool(gdata.get("expand_az", False)),
-                    seeds=[str(s).strip().lower() for s in (gdata.get("seeds") or []) if str(s).strip()],
-                )
-            )
+    default_groups = _parse_seed_groups(suggest_raw.get("seed_groups"))
+    groups_by_lang: dict[str, list[SeedGroupConfig]] = {}
+    for lang_key, lang_groups in (suggest_raw.get("seed_sets_by_lang") or {}).items():
+        groups_by_lang[str(lang_key).lower()] = _parse_seed_groups(lang_groups)
+    if default_groups and "en" not in groups_by_lang:
+        groups_by_lang["en"] = default_groups
+
+    prefixes_by_lang: dict[str, list[str]] = {}
+    for lang_key, plist in (suggest_raw.get("intent_prefixes_by_lang") or {}).items():
+        prefixes_by_lang[str(lang_key).lower()] = [
+            str(p).strip().lower() for p in (plist or []) if str(p).strip()
+        ]
+
     suggest = SuggestConfig(
         enabled=bool(suggest_raw.get("enabled", True)),
         az_letters_per_day=int(suggest_raw.get("az_letters_per_day", 6)),
         intent_prefixes=[str(p).strip().lower() for p in (suggest_raw.get("intent_prefixes") or []) if str(p).strip()],
-        seed_groups=groups,
+        intent_prefixes_by_lang=prefixes_by_lang,
+        seed_groups=default_groups,
+        seed_groups_by_lang=groups_by_lang,
     )
 
     funnel_raw = raw.get("funnel", {})
