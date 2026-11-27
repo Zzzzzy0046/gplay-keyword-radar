@@ -256,9 +256,10 @@ def load_config(config_path: str | Path) -> AppConfig:
 
     rep_raw = raw.get("reporting", {})
     dt_raw = rep_raw.get("dingtalk", {})
+    env_dt_url = os.environ.get("DINGTALK_WEBHOOK_URL", "").strip()
     dingtalk = DingTalkConfig(
-        enabled=bool(dt_raw.get("enabled", False)),
-        webhook_url=os.environ.get("DINGTALK_WEBHOOK_URL", "").strip() or str(dt_raw.get("webhook_url", "") or "").strip(),
+        enabled=bool(dt_raw.get("enabled", False)) or bool(env_dt_url),
+        webhook_url=env_dt_url or str(dt_raw.get("webhook_url", "") or "").strip(),
         secret=os.environ.get("DINGTALK_SECRET", "").strip() or str(dt_raw.get("secret", "") or "").strip(),
         top_n=int(dt_raw.get("top_n", 8)),
     )

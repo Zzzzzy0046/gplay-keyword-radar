@@ -26,7 +26,11 @@ from gplay_radar.models import (
     TrendsRecord,
 )
 from gplay_radar.pipeline.runner import RadarPipeline
-from gplay_radar.reporting.dingtalk import build_dingtalk_payload, sign_dingtalk_webhook
+from gplay_radar.reporting.dingtalk import (
+    build_dingtalk_global_payload,
+    build_dingtalk_payload,
+    sign_dingtalk_webhook,
+)
 from gplay_radar.storage.db import connect_db, init_db
 from gplay_radar.storage.repository import RadarRepository
 
@@ -179,6 +183,19 @@ class TestPipelineAndReporting(unittest.TestCase):
             )
             self.assertEqual(payload["msgtype"], "markdown")
             self.assertIn("GP热词雷达", payload["markdown"]["title"])
+
+            # Verify DingTalk preview file was saved automatically
+            self.assertTrue((tmp_path / "reports" / "daily" / "2026-11-26_dingtalk_preview.md").exists())
+
+            # Verify consolidated global DingTalk card format
+            g_payload = build_dingtalk_global_payload(
+                run_date="2026-11-26",
+                markets_map={"us": cfg.markets[0]},
+                scores_all=scores,
+                dark_horses_by_market={"us": []},
+            )
+            self.assertEqual(g_payload["msgtype"], "markdown")
+            self.assertIn("全球热词雷达", g_payload["markdown"]["title"])
 
             http.close()
             conn.close()

@@ -47,17 +47,24 @@ gplay-radar inspect "ماسح pdf" --country sa --lang ar
 
 ## 定时运行与钉钉推送
 
-- **Windows 每日定时运行**（默认每天 09:00）：
+### 方式一：GitHub Actions 云端免费每日自动跑（推荐）
+仓库已内置 [.github/workflows/daily_radar.yml](.github/workflows/daily_radar.yml)：
+- 每天北京时间 **09:00**（`01:00 UTC`）自动运行，无需本机开机与代理；
+- 历史 `data/radar.db` 与所有 Markdown 日/周报自动回存至独立 `data` 分支，支持直接在线查看并做每日 Diff；
+- 在 GitHub 仓库 `Settings → Secrets and variables → Actions` 新增以下两个 Secret 即可自动推钉钉（多国自动合并成 **1 条**跨国总览卡片）：
+  - `DINGTALK_WEBHOOK_URL`：钉钉群自定义机器人 Webhook 地址
+  - `DINGTALK_SECRET`：钉钉机器人加签密钥（`SEC...`）
+
+### 方式二：Windows 本机每日定时运行
+- 注册 Windows 每日任务（默认每天 09:00）：
   ```powershell
   .\scripts\register_scheduled_task.ps1 -RunAt "09:00"
   ```
-- **开启钉钉自定义机器人推送**：
-  1. 在 `config.yaml` 中将 `reporting.dingtalk.enabled` 设为 `true`；
-  2. 通过环境变量配置机器人地址与加签密钥（推荐，避免密钥落盘）：
-     ```powershell
-     $env:DINGTALK_WEBHOOK_URL = "https://oapi.dingtalk.com/robot/send?access_token=..."
-     $env:DINGTALK_SECRET = "SEC..."
-     ```
+- 开启钉钉推送（设置系统环境变量即可自动生效）：
+  ```powershell
+  [Environment]::SetEnvironmentVariable("DINGTALK_WEBHOOK_URL", "https://oapi.dingtalk.com/robot/send?access_token=...", "User")
+  [Environment]::SetEnvironmentVariable("DINGTALK_SECRET", "SEC...", "User")
+  ```
 
 ## 常用配置调优（`config.yaml`）
 

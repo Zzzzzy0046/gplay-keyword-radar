@@ -1,0 +1,149 @@
+name: Daily Google Play Keyword Radar
+
+on:
+  schedule:
+    # 01:00 UTC = 09:00 Beijing Time (UTC+8) every day
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      markets:
+        description: "Optional comma-separated countries (e.g. us,de,br). Leave empty for all 10 markets."
+        required: false
+        default: ""
+      region:
+        description: "Optional region filter (na, eu, latam, sea_mena). Leave empty for all."
+        required: false
+        default: ""
+      skip_trends:
+        description: "Skip Google Trends validation for faster run"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gplay-keyword-radar-daily
+  cancel-in-progress: false
+
+jobs:
+  radar-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code (main)
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install gplay-keyword-radar
+        run: pip install -e .
+
+      - name: Restore historical SQLite DB from data branch
+        run: |
+          mkdir -p data/reports
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data --depth=1
+            git show origin/data:data/radar.db > data/radar.db || true
+            echo "Restored radar.db ($(stat -c%s data/radar.db 2>/dev/null || echo 0) bytes)"
+          else
+            echo "No existing data branch found; starting fresh baseline DB."
+          fi
+
+      - name: Run daily Google Play keyword scan
+        env:
+          TZ: Asia/Shanghai
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.markets }}" ]; then
+            ARGS="$ARGS --market ${{ inputs.markets }}"
+          fi
+          if [ -n "${{ inputs.region }}" ]; then
+            ARGS="$ARGS --region ${{ inputs.region }}"
+          fi
+          if [ "${{ inputs.skip_trends }}" = "true" ]; then
+            ARGS="$ARGS --no-trends"
+          fi
+          echo "Running: gplay-radar run daily $ARGS"
+          gplay-radar run daily $ARGS
+
+          # Generate 7-day rolling weekly report every Monday (or when manually dispatched)
+          DOW=$(date +%u)
+          if [ "$DOW" = "1" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            gplay-radar run weekly $ARGS || true
+          fi
+
+      - name: Compact SQLite DB
+        run: |
+          python -c "import sqlite3; c=sqlite3.connect('data/radar.db'); c.execute('PRAGMA wal_checkpoint(TRUNCATE);'); c.execute('VACUUM;'); c.close()"
+          rm -f data/radar.db-wal data/radar.db-shm
+
+      - name: Publish Step Summary (DingTalk preview + Global Summary)
+        env:
+          TZ: Asia/Shanghai
+        run: |
+          TODAY=$(date +%Y-%m-%d)
+          {
+            echo "## DingTalk 推送卡片预览 ($TODAY)"
+            echo ""
+            if [ -f "data/reports/daily/${TODAY}_dingtalk_preview.md" ]; then
+              cat "data/reports/daily/${TODAY}_dingtalk_preview.md"
+            else
+              echo "_No DingTalk preview generated._"
+            fi
+            echo ""
+            echo "---"
+            echo ""
+            if [ -f "data/reports/daily/${TODAY}_global_summary.md" ]; then
+              cat "data/reports/daily/${TODAY}_global_summary.md"
+            else
+              LATEST=$(ls -t data/reports/daily/${TODAY}_*.md 2>/dev/null | head -n 1 || true)
+              if [ -n "$LATEST" ]; then
+                cat "$LATEST"
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Persist SQLite snapshot & Markdown reports to data branch
+        env:
+          TZ: Asia/Shanghai
+        run: |
+          TODAY=$(date +%Y-%m-%d)
+          WORKTREE_DIR=$(mktemp -d)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data --depth=1
+            git worktree add "$WORKTREE_DIR" origin/data
+          else
+            git worktree add --orphan -b data "$WORKTREE_DIR"
+          fi
+
+          mkdir -p "$WORKTREE_DIR/data/reports"
+          cp -f data/radar.db "$WORKTREE_DIR/data/radar.db"
+          cp -rf data/reports/* "$WORKTREE_DIR/data/reports/" 2>/dev/null || true
+
+          cd "$WORKTREE_DIR"
+          git add -f data/radar.db data/reports
+          if ! git diff --cached --quiet; then
+            git commit -m "data: daily snapshot and reports for ${TODAY}"
+            git push origin HEAD:refs/heads/data
+          else
+            echo "No data changes to push."
+          fi
+
+      - name: Upload Markdown reports artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gplay-radar-reports-${{ github.run_number }}
+          path: data/reports/
+          retention-days: 30

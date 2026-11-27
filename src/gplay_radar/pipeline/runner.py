@@ -25,7 +25,11 @@ from gplay_radar.models import (
 from gplay_radar.pipeline.diff import build_keyword_candidates, detect_chart_dark_horses
 from gplay_radar.pipeline.normalize import normalize_keyword
 from gplay_radar.pipeline.scoring import score_keyword
-from gplay_radar.reporting.dingtalk import send_dingtalk_daily_summary
+from gplay_radar.reporting.dingtalk import (
+    build_dingtalk_global_payload,
+    build_dingtalk_payload,
+    post_dingtalk_payload,
+)
 from gplay_radar.reporting.markdown import (
     render_daily_report,
     render_global_summary_report,
@@ -109,22 +113,95 @@ class RadarPipeline:
     ) -> list[RunSummary]:
         ref_date = run_date or date.today()
         run_date_str = ref_date.isoformat()
+        selected_markets = self._select_markets(market_filter, region_filter)
         summaries: list[RunSummary] = []
 
-        for market in self._select_markets(market_filter, region_filter):
+        for market in selected_markets:
             summary = self._run_daily_for_market(
                 market=market,
                 ref_date=ref_date,
                 run_date_str=run_date_str,
                 skip_trends=skip_trends,
-                skip_push=skip_push,
+                skip_push=True,  # Consolidated push handled once after all markets finish
             )
             summaries.append(summary)
 
         global_path = self.generate_global_summary(run_date=ref_date)
         if global_path and summaries:
             summaries[-1].global_summary_path = global_path
+
+        # Build DingTalk card preview (consolidated global card when >=2 markets, single-market card otherwise)
+        payload = self._build_daily_dingtalk_payload(
+            run_date_str=run_date_str,
+            summaries=summaries,
+        )
+        if payload:
+            preview_dir = self.cfg.storage.reports_dir / "daily"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            preview_path = preview_dir / f"{run_date_str}_dingtalk_preview.md"
+            preview_path.write_text(payload["markdown"]["text"], encoding="utf-8")
+
+            if self.cfg.reporting.dingtalk.enabled and self.cfg.reporting.dingtalk.webhook_url and not skip_push:
+                try:
+                    post_dingtalk_payload(self.cfg.reporting.dingtalk, payload)
+                    logger.info("DingTalk summary pushed successfully.")
+                except Exception as exc:
+                    logger.warning("DingTalk push failed: %s", exc)
+                    if summaries:
+                        summaries[-1].degraded_sources.append("dingtalk_push_failed")
+
         return summaries
+
+    def _build_daily_dingtalk_payload(
+        self,
+        *,
+        run_date_str: str,
+        summaries: list[RunSummary],
+    ) -> dict | None:
+        if not summaries:
+            return None
+        scores_all = self.repo.get_scores_for_date_all_markets(run_date_str)
+        charts_all = self.repo.get_charts_for_date_all_markets(run_date_str)
+        markets_map = {m.country: m for m in self.cfg.markets}
+        blacklist = set(self.cfg.scoring.blacklist_terms)
+
+        dark_horses_by_market: dict[str, list[DarkHorseApp]] = {}
+        for (country, lang), chart_apps in charts_all.items():
+            prev_date, prev_ranks = self.repo.get_latest_previous_chart_ranks(
+                run_date_str, country, lang
+            )
+            dark_horses_by_market[country] = detect_chart_dark_horses(
+                today_charts=chart_apps,
+                prev_ranks=prev_ranks,
+                charts_cfg=self.cfg.charts,
+                has_prev_snapshot=prev_date is not None,
+                blacklist=blacklist,
+                lang=lang,
+            )
+
+        countries_present = {s.country for s in scores_all} | set(dark_horses_by_market.keys())
+        degraded_map = {s.country: s.degraded_sources for s in summaries if s.degraded_sources}
+        if len(countries_present) >= 2:
+            return build_dingtalk_global_payload(
+                run_date=run_date_str,
+                markets_map=markets_map,
+                scores_all=scores_all,
+                dark_horses_by_market=dark_horses_by_market,
+                degraded_by_country=degraded_map,
+            )
+
+        only = summaries[0]
+        market = markets_map.get(only.country, MarketConfig(country=only.country, lang=only.lang))
+        market_scores = [s for s in scores_all if s.country == only.country]
+        return build_dingtalk_payload(
+            run_date=run_date_str,
+            market=market,
+            run_mode=only.mode,
+            scores=market_scores,
+            dark_horses=dark_horses_by_market.get(only.country, []),
+            degraded_sources=only.degraded_sources,
+            top_n=self.cfg.reporting.dingtalk.top_n,
+        )
 
     def generate_global_summary(self, *, run_date: date | None = None) -> str | None:
         """Build cross-market summary report if >=2 markets have data for run_date."""
@@ -473,15 +550,16 @@ class RadarPipeline:
 
             if self.cfg.reporting.dingtalk.enabled and not skip_push:
                 try:
-                    send_dingtalk_daily_summary(
-                        dingtalk_cfg=self.cfg.reporting.dingtalk,
+                    single_payload = build_dingtalk_payload(
                         run_date=run_date_str,
                         market=market,
                         run_mode=run_mode,
                         scores=final_scores,
                         dark_horses=dark_horses,
                         degraded_sources=degraded_unique,
+                        top_n=self.cfg.reporting.dingtalk.top_n,
                     )
+                    post_dingtalk_payload(self.cfg.reporting.dingtalk, single_payload)
                 except Exception as exc:
                     logger.warning("DingTalk push failed: %s", exc)
                     degraded_unique.append("dingtalk_push_failed")
